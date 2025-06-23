@@ -1,5 +1,16 @@
 # MP4MUSEUM
-MP4MUSEUM.org Media Player
+MP4MUSEUM.org Media Player dballsworth fork for remote control
+
+## 🧪 Development Outside Raspberry Pi
+
+To enable development on a Mac, VM, or other non-Raspberry Pi system:
+
+- The `fake_rpi/` module contains a mocked version of `RPi.GPIO`
+- It is automatically used when the real `RPi.GPIO` is not available
+- This allows development and testing without hardware
+
+You can safely leave `fake_rpi/` in the repo — it's small, isolated, and ignored in production use.
+
 
 Version 6 is out! 
 

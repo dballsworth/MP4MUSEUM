@@ -1,9 +1,19 @@
-# mp4museum v6 unified - july 2023
+# mp4museum v6 forked by dballsworth - june 2024
+# (c) julius schmiedel - http://mp4museum.org4
+import sys
+import os
 
-# (c) julius schmiedel - http://mp4museum.org
+try:
+    import RPi.GPIO as GPIO
+    print("✅ Using real RPi.GPIO")
+except (ImportError, RuntimeError, ModuleNotFoundError):
+    try:
+        from fake_rpi import GPIO
+        print("🧪 Using fake_rpi.GPIO for non-Pi development.")
+    except ImportError:
+        raise ImportError("⚠️ Neither RPi.GPIO nor fake_rpi.GPIO could be loaded.")
 
 import time, vlc, os, glob
-import RPi.GPIO as GPIO
 import subprocess
 
 # read audio device config
