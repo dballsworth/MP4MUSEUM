@@ -26,8 +26,29 @@ import subprocess
 audiodevice = "0"
 
 # global variable for current collection
-current_collection = "/media/"
+current_collection = "/media/"  # Keep this as is for now
 current_collection_id = 0
+
+# STEP 2: Add this initialization AFTER the GPIO setup (around line 40, after the GPIO.setup lines):
+# Initialize collection properly after everything else is set up
+def initialize_collection():
+    global current_collection
+    all_collections = sorted([d for d in glob.glob("/media/videos/*") if os.path.isdir(d)])
+    if all_collections:
+        current_collection = all_collections[0]  # Start with first available collection
+        print(f"🎯 Initial collection set to: {current_collection}")
+    else:
+        current_collection = "/media/videos"  # Fallback if no collections found
+        print(f"🎯 No collections found, using fallback: {current_collection}")
+    sys.stdout.flush()
+
+# Call the initialization
+initialize_collection()
+
+# Add global variables for collection switching
+last_collection = None
+last_collection_id = -1
+collection_changed = False  # New flag for cleaner change detection
 
 # Global startup mode flag
 startup_mode = True
@@ -62,6 +83,11 @@ def buttonNext(channel):
         player.stop()
 
 # play media with vlc
+# Replace your existing vlc_play function with this version:
+
+# Replace your vlc_play function with this corrected version:
+
+# First, revert vlc_play to the original (but keep it simple):
 def vlc_play(source, collection):
     print(f"🧪 DEBUG: Current collection at playback time: {collection}")
     if not source.startswith(collection):
@@ -70,22 +96,27 @@ def vlc_play(source, collection):
         print(f"🎬 Now playing from collection: {collection}")
         print(f"🎬 File: {source}")
     sys.stdout.flush()
+    
     if("loop." in source):
         vlc_instance = vlc.Instance('--input-repeat=999999999 -q -A alsa --alsa-audio-device hw:' + audiodevice)
     else:
         vlc_instance = vlc.Instance('-q -A alsa --alsa-audio-device hw:'+ audiodevice)
+    
     global player
     player = vlc_instance.media_player_new()
     media = vlc_instance.media_new(source)
     player.set_media(media)
     player.play()
     time.sleep(1)
+    
     current_state = player.get_state()
     while current_state == 3 or current_state == 4:
         time.sleep(.01)
         current_state = player.get_state()
+    
     media.release()
     player.release()
+
 
 # find a file, and if found, return its path (for sync)
 def search_file(file_name):
@@ -104,7 +135,6 @@ def search_file(file_name):
 
 
 # *** run player ****
-
 
 # Initial startup video (optional; disable if not needed)
 boot_video = "/home/pi/mp4museum-boot.mp4"
@@ -134,9 +164,14 @@ def start_player_loop():
     global current_collection
     global current_collection_id
     global startup_mode
-    last_collection = None
-    last_collection_id = -1
+    global last_collection
+    global last_collection_id
+    global collection_changed
+    
     all_collections = sorted([d for d in glob.glob("/media/videos/*") if os.path.isdir(d)])
+    print(f"🎵 Available collections: {all_collections}")
+    print(f"📡 Starting player loop with collection: {current_collection}")
+    sys.stdout.flush()
 
     if startup_mode:
         for collection in all_collections:
@@ -146,40 +181,51 @@ def start_player_loop():
         startup_mode = False
 
     playlist = []
-    print(f"📡 Entering player loop with collection: {current_collection}")
-    sys.stdout.flush()
+    
     while True:
-        print("🔄 Player loop is running...")
+        print(f"🔄 Loop check - Current: {current_collection}")
+        print(f"🔄 Last: {last_collection}, Changed: {collection_changed}")
         sys.stdout.flush()
-        if current_collection != last_collection or current_collection_id != last_collection_id:
+        
+        # Check if collection changed
+        if (current_collection != last_collection or 
+            current_collection_id != last_collection_id or 
+            collection_changed):
+            
+            print(f"🔄 Collection change detected! Building playlist for: {current_collection}")
+            sys.stdout.flush()
+            
             playlist = sorted([
                 file for file in glob.glob(os.path.join(current_collection, "*.*"))
                 if os.path.isfile(file)
             ])
+            
+            print(f"🎵 Found {len(playlist)} files: {[os.path.basename(f) for f in playlist]}")
+            
+            # Update tracking variables
             last_collection = current_collection
             last_collection_id = current_collection_id
+            collection_changed = False
+            
             if not playlist:
-                print(f"⚠️ No playable media found in: {last_collection}")
-            print(f"🎵 Playlist refreshed for collection: {last_collection}")
-            print(f"🎵 Files: {playlist}")
+                print(f"⚠️ No playable media found in: {current_collection}")
             sys.stdout.flush()
 
-        print(f"🌀 Processing playlist from: {playlist}")
-        sys.stdout.flush()
         if playlist:
             for file in playlist:
-                # Check again in case collection changed during playback
-                if current_collection != last_collection or current_collection_id != last_collection_id:
+                print(f"🎬 Playing: {os.path.basename(file)} from {current_collection}")
+                sys.stdout.flush()
+                
+                # Check if collection changed during playback
+                if (current_collection != last_collection or 
+                    current_collection_id != last_collection_id or 
+                    collection_changed):
                     print("🔁 Collection changed mid-playback. Breaking loop.")
                     sys.stdout.flush()
                     break
                 vlc_play(file, current_collection)
-        elif not playlist:
-            print(f"⚠️ Playlist is empty for collection: {current_collection}")
-            sys.stdout.flush()
-            time.sleep(1)
         else:
-            print(f"💤 Waiting for collection selection...")
+            print(f"💤 No playlist, waiting... Current collection: {current_collection}")
             sys.stdout.flush()
             time.sleep(1)
 
@@ -195,37 +241,46 @@ def list_collections():
     folders = [os.path.basename(d) for d in glob.glob("/media/videos/*") if os.path.isdir(d)]
     return jsonify(folders)
 
+# And fix the /set_collection endpoint to force immediate collection switch:
 @app.route("/set_collection", methods=["POST"])
 def set_collection():
+    global current_collection
+    global current_collection_id
+    global startup_mode
+    global player
+    global collection_changed
+    
     collection = request.json.get("collection")
     path = f"/media/videos/{collection}"
     print(f"🧪 Received collection switch request to: {collection}")
     print(f"🧪 Full path resolved: {path}")
     print(f"🧪 Path exists? {os.path.isdir(path)}")
     sys.stdout.flush()
-
-    global current_collection
+    
     if os.path.isdir(path):
-        global startup_mode
         startup_mode = False
-        global current_collection_id
-
-        global player
-        player.stop()  # Stop current playback before updating collection
-        global last_collection
-        last_collection = None  # Force reload of playlist in main loop
-
+        
+        # FORCE stop current playback immediately
+        try:
+            if player is not None:
+                player.stop()
+                print("🛑 Forcefully stopped current player")
+                sys.stdout.flush()
+        except Exception as e:
+            print(f"⚠️ Error stopping player: {e}")
+        
+        # Update collection variables
         current_collection = path
-        print(f"🎯 Updated current_collection to: {current_collection}")
-        sys.stdout.flush()
-        current_collection_id += 1  # 🆕 This triggers playlist reload
-        time.sleep(0.5)  # ⏸️ Give loop time to detect change
-
+        current_collection_id += 1
+        collection_changed = True
+        
         print(f"🎯 Collection set to: {current_collection}")
+        print(f"🎯 Collection ID: {current_collection_id}")
         sys.stdout.flush()
+        
         return jsonify({"status": "ok", "collection": collection})
+    
     return jsonify({"status": "error", "message": "Invalid collection"}), 400
-
 @app.route("/play", methods=["POST"])
 def play():
     player.play()
