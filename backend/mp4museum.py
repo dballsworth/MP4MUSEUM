@@ -3,16 +3,21 @@
 import sys
 import os
 import subprocess
-import time, vlc, os, glob
-import subprocess
+import time
+import vlc
+import glob
+import signal
+import atexit
 
 player = None  # ensure player is initialized
+running = True  # Global flag to control loops
 
 # Flask API for collection control
 from flask import Flask, jsonify, request
-from threading import Thread
+from threading import Thread, Event
 from threading import Lock
 collection_lock = Lock()
+shutdown_event = Event()  # Event to signal threads to exit
 
 try:
     import RPi.GPIO as GPIO
@@ -70,30 +75,39 @@ GPIO.setup(13, GPIO.IN, pull_up_down = GPIO.PUD_DOWN)
 # functions to be called by event listener
 # with code to filter interference / static discharges
 def buttonPause(channel):
+    global player
+    # Debounce with fewer iterations and longer sleep
     inputfilter = 0
-    for x in range(0,200):
+    for x in range(0, 20):  # Reduced iterations
         if GPIO.input(11):
             inputfilter = inputfilter + 1
-        time.sleep(.001)
-    if (inputfilter > 50):
-        player.pause()
+        time.sleep(0.01)  # Increased sleep time
+    
+    if inputfilter > 5 and player:  # Adjusted threshold
+        try:
+            player.pause()
+        except Exception as e:
+            print(f"Error in buttonPause: {e}")
 
 def buttonNext(channel):
+    global player
+    # Debounce with fewer iterations and longer sleep
     inputfilter = 0
-    for x in range(0,200):
+    for x in range(0, 20):  # Reduced iterations
         if GPIO.input(13):
             inputfilter = inputfilter + 1
-        time.sleep(.001)
-    if (inputfilter > 50):
-        player.stop()
+        time.sleep(0.01)  # Increased sleep time
+    
+    if inputfilter > 5 and player:  # Adjusted threshold
+        try:
+            player.stop()
+        except Exception as e:
+            print(f"Error in buttonNext: {e}")
 
 # play media with vlc
-# Replace your existing vlc_play function with this version:
-
-# Replace your vlc_play function with this corrected version:
-
-# First, revert vlc_play to the original (but keep it simple):
 def vlc_play(source, collection):
+    global player, running
+    
     print(f"🧪 DEBUG: Current collection at playback time: {collection}")
     if not source.startswith(collection):
         print(f"⚠️ WARNING: File {source} is outside the expected collection path {collection}")
@@ -103,22 +117,22 @@ def vlc_play(source, collection):
         print(f"🎬 File: {source}")
     sys.stdout.flush()
     
-    if("loop." in source):
+    if "loop." in source:
         vlc_instance = vlc.Instance('--input-repeat=999999999 -q -A alsa --alsa-audio-device hw:' + audiodevice)
     else:
         vlc_instance = vlc.Instance('-q -A alsa --alsa-audio-device hw:'+ audiodevice)
     
-    global player
     player = vlc_instance.media_player_new()
     media = vlc_instance.media_new(source)
     player.set_media(media)
     player.play()
     time.sleep(1)
     
-    current_state = player.get_state()
-    while current_state == 3 or current_state == 4:
-        time.sleep(.01)
-        current_state = player.get_state()
+    # More efficient polling with longer sleep time
+    while player.get_state() in (3, 4) and running:  # 3=Playing, 4=Paused
+        time.sleep(0.1)  # Increased sleep time to reduce CPU usage
+        if shutdown_event.is_set():
+            break
     
     media.release()
     player.release()
@@ -167,13 +181,9 @@ if syncFile and enableSync:
 
 # playback loop in a function
 def start_player_loop():
-    global current_collection
-    global current_collection_id
-    global startup_mode
-    global last_collection
-    global last_collection_id
-    global collection_changed
-    global collection_ready
+    global current_collection, current_collection_id, startup_mode
+    global last_collection, last_collection_id, collection_changed, collection_ready
+    global running
     
     all_collections = sorted([d for d in glob.glob("/media/internal/*") if os.path.isdir(d)])
     print(f"🎵 Available collections: {all_collections}")
@@ -186,9 +196,11 @@ def start_player_loop():
         sys.stdout.flush()
         playlist = sorted(glob.glob(os.path.join(current_collection, "*.*")))
         for file in playlist:
+            if not running or shutdown_event.is_set():
+                return
             vlc_play(file, current_collection)  
 
-    while True:
+    while running and not shutdown_event.is_set():
         collection_for_playback = None
         playlist = []
         collection_id_snapshot = current_collection_id
@@ -219,6 +231,9 @@ def start_player_loop():
             continue
 
         for file in playlist:
+            if not running or shutdown_event.is_set():
+                return
+                
             with collection_lock:
                 if (current_collection != collection_for_playback or
                     current_collection_id != collection_id_snapshot or
@@ -243,8 +258,46 @@ def start_player_loop():
         if not playlist:
             print(f"⚠️ No playable files found in collection: {collection_for_playback}")
             sys.stdout.flush()
+            time.sleep(5)  # Sleep longer when no files found to reduce CPU usage
             continue
 
+
+# Define cleanup function
+def cleanup():
+    global running
+    print("🧹 Cleaning up resources...")
+    running = False
+    shutdown_event.set()
+    
+    # Stop player if it exists
+    global player
+    if player:
+        try:
+            player.stop()
+            player.release()
+        except Exception as e:
+            print(f"Error stopping player during cleanup: {e}")
+    
+    # Clean up GPIO
+    try:
+        GPIO.cleanup()
+        print("✅ GPIO cleaned up")
+    except Exception as e:
+        print(f"Error cleaning up GPIO: {e}")
+    
+    print("👋 Goodbye!")
+    sys.stdout.flush()
+
+# Signal handler for graceful shutdown
+def signal_handler(sig, frame):
+    print("🛑 Received shutdown signal, cleaning up...")
+    cleanup()
+    sys.exit(0)
+
+# Register signal handlers
+signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
+signal.signal(signal.SIGTERM, signal_handler)  # Termination signal
+atexit.register(cleanup)  # Register cleanup on normal exit
 
 # start player loop in a separate thread
 player_thread = Thread(target=start_player_loop, daemon=True)
@@ -321,4 +374,19 @@ def restart():
     subprocess.Popen(["python3"] + sys.argv)
     os._exit(0)
 
-app.run(host="0.0.0.0", port=5000)
+# Run Flask in a separate thread to allow main thread to handle signals
+def run_flask_app():
+    app.run(host="0.0.0.0", port=5000, threaded=True, use_reloader=False)
+
+flask_thread = Thread(target=run_flask_app, daemon=True)
+flask_thread.start()
+
+# Keep the main thread alive to handle signals
+try:
+    while running and not shutdown_event.is_set():
+        time.sleep(1)
+except KeyboardInterrupt:
+    print("🛑 Keyboard interrupt received in main thread")
+    cleanup()
+
+print("🏁 Main thread exiting")
