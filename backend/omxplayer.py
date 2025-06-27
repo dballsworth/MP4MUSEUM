@@ -774,7 +774,7 @@ debug_thread_info()
 print("💓 Main thread running with OMXPlayer backend...")
 try:
     while running and not shutdown_event.is_set():
-        time.sleep(10)
+        time.sleep(0.5)
         thread_count = threading.active_count()
         print(f"💓 Heartbeat - Threads: {thread_count}")
         if thread_count > 5:
