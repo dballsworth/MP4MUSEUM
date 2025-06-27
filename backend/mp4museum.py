@@ -14,11 +14,6 @@ from threading import Thread
 from threading import Lock
 collection_lock = Lock()
 
-if os.environ.get('DISPLAY', '') == '':
-    instance = vlc.Instance('--no-xlib')
-else:
-    instance = vlc.Instance()
-
 try:
     import RPi.GPIO as GPIO
     print("✅ Using real RPi.GPIO")
