@@ -25,15 +25,8 @@ collections_cache = {}
 collections_cache_time = 0
 CACHE_DURATION = 30  # Cache collections for 30 seconds
 
-try:
-    import RPi.GPIO as GPIO
-    print("✅ Using real RPi.GPIO")
-except (ImportError, RuntimeError, ModuleNotFoundError):
-    try:
-        from fake_rpi import GPIO
-        print("🧪 Using fake_rpi.GPIO for non-Pi development.")
-    except ImportError:
-        raise ImportError("⚠️ Neither RPi.GPIO nor fake_rpi.GPIO could be loaded.")
+# GPIO REMOVED - not needed for this setup
+print("🚀 GPIO support disabled - using API/web control only")
 
 # read audio device config
 audiodevice = "0"
@@ -54,11 +47,6 @@ startup_mode = True
 if os.path.isfile('/boot/alsa.txt'):
     f = open('/boot/alsa.txt', 'r')
     audiodevice = f.read(1)
-
-# setup GPIO pin
-GPIO.setmode(GPIO.BOARD)
-GPIO.setup(11, GPIO.IN, pull_up_down = GPIO.PUD_DOWN)
-GPIO.setup(13, GPIO.IN, pull_up_down = GPIO.PUD_DOWN)
 
 # OPTIMIZATION: Create single VLC instance to reuse
 def initialize_vlc():
@@ -103,25 +91,7 @@ def initialize_collection():
 initialize_vlc()
 initialize_collection()
 
-# OPTIMIZATION: Simplified GPIO functions with reduced debouncing
-def buttonPause(channel):
-    global player
-    # Simplified debouncing - let GPIO hardware handle most of it
-    if player:
-        try:
-            player.pause()
-        except Exception as e:
-            print(f"Error in buttonPause: {e}")
-
-def buttonNext(channel):
-    global player
-    # Simplified debouncing - let GPIO hardware handle most of it  
-    if player:
-        try:
-            player.stop()
-            playback_finished.set()  # Signal that we want to skip to next
-        except Exception as e:
-            print(f"Error in buttonNext: {e}")
+# GPIO functions removed - control via API only
 
 # OPTIMIZATION: Event-driven playback instead of polling
 def vlc_play(source, collection):
@@ -199,9 +169,7 @@ boot_video = "/home/pi/mp4museum-boot.mp4"
 if os.path.exists(boot_video):
     vlc_play(boot_video, os.path.dirname(boot_video))
 
-# OPTIMIZATION: Increased bouncetime for hardware debouncing
-GPIO.add_event_detect(11, GPIO.RISING, callback = buttonPause, bouncetime = 500)  # Increased from 234
-GPIO.add_event_detect(13, GPIO.RISING, callback = buttonNext, bouncetime = 1000)  # Increased from 1234
+# GPIO event detection removed - API control only
 
 # check for sync mode instructions
 enableSync = search_file("sync-leader.txt")
@@ -319,12 +287,8 @@ def cleanup():
         except Exception as e:
             print(f"Error releasing VLC instance: {e}")
     
-    # Clean up GPIO
-    try:
-        GPIO.cleanup()
-        print("✅ GPIO cleaned up")
-    except Exception as e:
-        print(f"Error cleaning up GPIO: {e}")
+    # GPIO cleanup removed - not using GPIO
+    print("✅ Cleanup completed")
     
     print("👋 Goodbye!")
     sys.stdout.flush()
@@ -397,6 +361,15 @@ def set_collection():
         sys.stdout.flush()
 
     return jsonify({"status": "ok", "collection": collection})
+
+@app.route("/next", methods=["POST"])
+def next_track():
+    """Skip to next track"""
+    if player:
+        player.stop()
+        playback_finished.set()
+        return jsonify({"status": "skipped"})
+    return jsonify({"status": "error", "message": "No player available"})
 
 @app.route("/play", methods=["POST"])
 def play():
