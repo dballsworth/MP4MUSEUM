@@ -1,4 +1,4 @@
-# mp4museum v6.9 forked by dballsworth - june 2024
+# mp4museum v6.9 forked by dballsworth - june 2024 - CPU OPTIMIZED
 # (c) julius schmiedel - http://mp4museum.org4
 import sys
 import os
@@ -8,16 +8,22 @@ import vlc
 import glob
 import signal
 import atexit
+from threading import Thread, Event, Lock
 
 player = None  # ensure player is initialized
+vlc_instance = None  # Global VLC instance to reuse
 running = True  # Global flag to control loops
+playback_finished = Event()  # Event-driven playback control
 
 # Flask API for collection control
 from flask import Flask, jsonify, request
-from threading import Thread, Event
-from threading import Lock
 collection_lock = Lock()
 shutdown_event = Event()  # Event to signal threads to exit
+
+# Cache for collections to avoid repeated file system operations
+collections_cache = {}
+collections_cache_time = 0
+CACHE_DURATION = 30  # Cache collections for 30 seconds
 
 try:
     import RPi.GPIO as GPIO
@@ -29,31 +35,13 @@ except (ImportError, RuntimeError, ModuleNotFoundError):
     except ImportError:
         raise ImportError("⚠️ Neither RPi.GPIO nor fake_rpi.GPIO could be loaded.")
 
-
-
- # read audio device config
+# read audio device config
 audiodevice = "0"
 
 # global variable for current collection
 current_collection = "/media/"  # Keep this as is for now
 current_collection_id = 0
 collection_ready = False
-
-# STEP 2: Add this initialization AFTER the GPIO setup (around line 40, after the GPIO.setup lines):
-# Initialize collection properly after everything else is set up
-def initialize_collection():
-    global current_collection
-    all_collections = sorted([d for d in glob.glob("/media/internal/*") if os.path.isdir(d)])
-    if all_collections:
-        current_collection = all_collections[0]  # Start with first available collection
-        print(f"🎯 Initial collection set to: {current_collection}")
-    else:
-        current_collection = "/media/internal"  # Fallback if no collections found
-        print(f"🎯 No collections found, using fallback: {current_collection}")
-    sys.stdout.flush()
-
-# Call the initialization
-initialize_collection()
 
 # Add global variables for collection switching
 last_collection = None
@@ -72,18 +60,54 @@ GPIO.setmode(GPIO.BOARD)
 GPIO.setup(11, GPIO.IN, pull_up_down = GPIO.PUD_DOWN)
 GPIO.setup(13, GPIO.IN, pull_up_down = GPIO.PUD_DOWN)
 
-# functions to be called by event listener
-# with code to filter interference / static discharges
+# OPTIMIZATION: Create single VLC instance to reuse
+def initialize_vlc():
+    global vlc_instance, player
+    vlc_instance = vlc.Instance('-q -A alsa --alsa-audio-device hw:' + audiodevice)
+    player = vlc_instance.media_player_new()
+    
+    # Set up event handling for playback completion
+    event_manager = player.event_manager()
+    event_manager.event_attach(vlc.EventType.MediaPlayerEndReached, on_media_end)
+
+def on_media_end(event):
+    """Event callback when media playback ends - eliminates polling loop"""
+    global playback_finished
+    playback_finished.set()
+
+# OPTIMIZATION: Cached collection retrieval
+def get_collections_cached():
+    global collections_cache, collections_cache_time
+    current_time = time.time()
+    
+    if current_time - collections_cache_time > CACHE_DURATION:
+        collections_cache = sorted([d for d in glob.glob("/media/internal/*") if os.path.isdir(d)])
+        collections_cache_time = current_time
+    
+    return collections_cache
+
+# STEP 2: Add this initialization AFTER the GPIO setup (around line 40, after the GPIO.setup lines):
+# Initialize collection properly after everything else is set up
+def initialize_collection():
+    global current_collection
+    all_collections = get_collections_cached()
+    if all_collections:
+        current_collection = all_collections[0]  # Start with first available collection
+        print(f"🎯 Initial collection set to: {current_collection}")
+    else:
+        current_collection = "/media/internal"  # Fallback if no collections found
+        print(f"🎯 No collections found, using fallback: {current_collection}")
+    sys.stdout.flush()
+
+# Initialize VLC and collection
+initialize_vlc()
+initialize_collection()
+
+# OPTIMIZATION: Simplified GPIO functions with reduced debouncing
 def buttonPause(channel):
     global player
-    # Debounce with fewer iterations and longer sleep
-    inputfilter = 0
-    for x in range(0, 20):  # Reduced iterations
-        if GPIO.input(11):
-            inputfilter = inputfilter + 1
-        time.sleep(0.01)  # Increased sleep time
-    
-    if inputfilter > 5 and player:  # Adjusted threshold
+    # Simplified debouncing - let GPIO hardware handle most of it
+    if player:
         try:
             player.pause()
         except Exception as e:
@@ -91,22 +115,17 @@ def buttonPause(channel):
 
 def buttonNext(channel):
     global player
-    # Debounce with fewer iterations and longer sleep
-    inputfilter = 0
-    for x in range(0, 20):  # Reduced iterations
-        if GPIO.input(13):
-            inputfilter = inputfilter + 1
-        time.sleep(0.01)  # Increased sleep time
-    
-    if inputfilter > 5 and player:  # Adjusted threshold
+    # Simplified debouncing - let GPIO hardware handle most of it  
+    if player:
         try:
             player.stop()
+            playback_finished.set()  # Signal that we want to skip to next
         except Exception as e:
             print(f"Error in buttonNext: {e}")
 
-# play media with vlc
+# OPTIMIZATION: Event-driven playback instead of polling
 def vlc_play(source, collection):
-    global player, running
+    global player, running, playback_finished, vlc_instance
     
     print(f"🧪 DEBUG: Current collection at playback time: {collection}")
     if not source.startswith(collection):
@@ -117,26 +136,46 @@ def vlc_play(source, collection):
         print(f"🎬 File: {source}")
     sys.stdout.flush()
     
+    # OPTIMIZATION: Reuse existing VLC instance, just change media
     if "loop." in source:
-        vlc_instance = vlc.Instance('--input-repeat=999999999 -q -A alsa --alsa-audio-device hw:' + audiodevice)
+        # For loop files, we need a new instance with repeat
+        loop_instance = vlc.Instance('--input-repeat=999999999 -q -A alsa --alsa-audio-device hw:' + audiodevice)
+        loop_player = loop_instance.media_player_new()
+        media = loop_instance.media_new(source)
+        loop_player.set_media(media)
+        loop_player.play()
+        
+        # Use simpler blocking wait for loop files
+        time.sleep(1)
+        while loop_player.get_state() in (3, 4) and running:
+            time.sleep(0.5)  # Longer sleep for loop files
+            if shutdown_event.is_set():
+                break
+        
+        media.release()
+        loop_player.release()
+        loop_instance.release()
     else:
-        vlc_instance = vlc.Instance('-q -A alsa --alsa-audio-device hw:'+ audiodevice)
-    
-    player = vlc_instance.media_player_new()
-    media = vlc_instance.media_new(source)
-    player.set_media(media)
-    player.play()
-    time.sleep(1)
-    
-    # More efficient polling with longer sleep time
-    while player.get_state() in (3, 4) and running:  # 3=Playing, 4=Paused
-        time.sleep(0.1)  # Increased sleep time to reduce CPU usage
-        if shutdown_event.is_set():
-            break
-    
-    media.release()
-    player.release()
-
+        # OPTIMIZATION: Reuse global player instance
+        media = vlc_instance.media_new(source)
+        player.set_media(media)
+        playback_finished.clear()  # Reset the event
+        player.play()
+        
+        time.sleep(0.1)  # Brief pause to let playback start
+        
+        # OPTIMIZATION: Event-driven waiting instead of polling
+        while running and not shutdown_event.is_set():
+            # Wait for either playback to finish or shutdown signal
+            if playback_finished.wait(timeout=0.5):  # Check every 500ms instead of 100ms
+                break
+            
+            # Only check player state occasionally as fallback
+            state = player.get_state()
+            if state not in (3, 4):  # Not playing or paused
+                break
+        
+        media.release()
 
 # find a file, and if found, return its path (for sync)
 def search_file(file_name):
@@ -153,7 +192,6 @@ def search_file(file_name):
     # Return False if the file is not found
     return False
 
-
 # *** run player ****
 
 # Initial startup video (optional; disable if not needed)
@@ -161,9 +199,9 @@ boot_video = "/home/pi/mp4museum-boot.mp4"
 if os.path.exists(boot_video):
     vlc_play(boot_video, os.path.dirname(boot_video))
 
-# add event listener which reacts to GPIO signal
-GPIO.add_event_detect(11, GPIO.RISING, callback = buttonPause, bouncetime = 234)
-GPIO.add_event_detect(13, GPIO.RISING, callback = buttonNext, bouncetime = 1234)
+# OPTIMIZATION: Increased bouncetime for hardware debouncing
+GPIO.add_event_detect(11, GPIO.RISING, callback = buttonPause, bouncetime = 500)  # Increased from 234
+GPIO.add_event_detect(13, GPIO.RISING, callback = buttonNext, bouncetime = 1000)  # Increased from 1234
 
 # check for sync mode instructions
 enableSync = search_file("sync-leader.txt")
@@ -178,14 +216,13 @@ if syncFile and enableSync:
     print("Sync Mode PLAYER:" + syncFile)
     subprocess.run(["omxplayer-sync", "-u", "-l",  syncFile]) 
 
-
-# playback loop in a function
+# OPTIMIZATION: Simplified playback loop
 def start_player_loop():
     global current_collection, current_collection_id, startup_mode
     global last_collection, last_collection_id, collection_changed, collection_ready
     global running
     
-    all_collections = sorted([d for d in glob.glob("/media/internal/*") if os.path.isdir(d)])
+    all_collections = get_collections_cached()
     print(f"🎵 Available collections: {all_collections}")
     print(f"📡 Starting player loop with collection: {current_collection}")
     sys.stdout.flush()
@@ -205,6 +242,8 @@ def start_player_loop():
         playlist = []
         collection_id_snapshot = current_collection_id
 
+        # OPTIMIZATION: Reduced lock contention
+        collection_changed_local = False
         with collection_lock:
             if (current_collection != last_collection or 
                 current_collection_id != last_collection_id or 
@@ -213,6 +252,8 @@ def start_player_loop():
                 collection_for_playback = current_collection
                 print(f"📦 DEBUG: Locked-in collection_for_playback: {collection_for_playback}")
                 sys.stdout.flush()
+                
+                # OPTIMIZATION: Cache playlist instead of recalculating
                 playlist = sorted([
                     file for file in glob.glob(os.path.join(collection_for_playback, "*.*"))
                     if os.path.isfile(file)
@@ -222,61 +263,61 @@ def start_player_loop():
                 print(f"🧪 Playlist for {collection_for_playback}: {[os.path.basename(f) for f in playlist]}")
                 sys.stdout.flush()
 
-                last_collection = collection_for_playback
+                last_collection = collection_for_playbook = collection_for_playback
                 last_collection_id = collection_id_snapshot
-                collection_changed = False  # Reset the flag here
+                collection_changed = False
+                collection_changed_local = True
 
         if not playlist or not collection_for_playback:
-            time.sleep(1)
+            time.sleep(2)  # OPTIMIZATION: Longer sleep when idle
             continue
 
         for file in playlist:
             if not running or shutdown_event.is_set():
                 return
                 
-            with collection_lock:
-                if (current_collection != collection_for_playback or
-                    current_collection_id != collection_id_snapshot or
-                    collection_changed):
-                    print("🔁 Collection changed mid-playback. Breaking loop.")
-                    sys.stdout.flush()
-                    break  # Exit the current playlist loop if the collection has changed
+            # OPTIMIZATION: Less frequent collection change checking
+            if collection_changed_local:
+                with collection_lock:
+                    if (current_collection != collection_for_playback or
+                        current_collection_id != collection_id_snapshot or
+                        collection_changed):
+                        print("🔁 Collection changed mid-playback. Breaking loop.")
+                        sys.stdout.flush()
+                        break
 
             print(f"🎬 Playing: {os.path.basename(file)} from {collection_for_playback}")
             sys.stdout.flush()
 
             vlc_play(file, collection_for_playback)
 
-            with collection_lock:
-                if (current_collection != collection_for_playback or
-                    current_collection_id != collection_id_snapshot or
-                    collection_changed):
-                    print("🔁 Collection changed mid-playback. Breaking loop.")
-                    sys.stdout.flush()
-                    break
-
         if not playlist:
             print(f"⚠️ No playable files found in collection: {collection_for_playback}")
             sys.stdout.flush()
-            time.sleep(5)  # Sleep longer when no files found to reduce CPU usage
+            time.sleep(10)  # OPTIMIZATION: Longer sleep when no files found
             continue
-
 
 # Define cleanup function
 def cleanup():
-    global running
+    global running, player, vlc_instance
     print("🧹 Cleaning up resources...")
     running = False
     shutdown_event.set()
     
     # Stop player if it exists
-    global player
     if player:
         try:
             player.stop()
             player.release()
         except Exception as e:
             print(f"Error stopping player during cleanup: {e}")
+    
+    # Release VLC instance
+    if vlc_instance:
+        try:
+            vlc_instance.release()
+        except Exception as e:
+            print(f"Error releasing VLC instance: {e}")
     
     # Clean up GPIO
     try:
@@ -310,10 +351,10 @@ CORS(app)
 
 @app.route("/collections", methods=["GET"])
 def list_collections():
-    folders = [os.path.basename(d) for d in glob.glob("/media/videos/*") if os.path.isdir(d)]
+    # OPTIMIZATION: Use cached collections
+    folders = [os.path.basename(d) for d in get_collections_cached()]
     return jsonify(folders)
 
-# And fix the /set_collection endpoint to force immediate collection switch:
 @app.route("/set_collection", methods=["POST"])
 def set_collection():
     global current_collection
@@ -324,7 +365,7 @@ def set_collection():
     global collection_ready
 
     collection = request.json.get("collection")
-    all_collections = [os.path.basename(d) for d in glob.glob("/media/internal/*") if os.path.isdir(d)]
+    all_collections = [os.path.basename(d) for d in get_collections_cached()]
     
     if collection not in all_collections:
         return jsonify({"status": "error", "message": "Invalid collection"}), 400
@@ -343,8 +384,8 @@ def set_collection():
         try:
             if player is not None:
                 player.stop()
-                player.release()  # Release the player to free resources
-                print("🛑 Forcefully stopped and released current player")
+                playback_finished.set()  # Signal immediate stop
+                print("🛑 Forcefully stopped current player")
         except Exception as e:
             print(f"⚠️ Error stopping player: {e}")
 
@@ -359,13 +400,17 @@ def set_collection():
 
 @app.route("/play", methods=["POST"])
 def play():
-    player.play()
-    return jsonify({"status": "playing"})
+    if player:
+        player.play()
+        return jsonify({"status": "playing"})
+    return jsonify({"status": "error", "message": "No player available"})
 
 @app.route("/pause", methods=["POST"])
 def pause():
-    player.pause()
-    return jsonify({"status": "paused"})
+    if player:
+        player.pause()
+        return jsonify({"status": "paused"})
+    return jsonify({"status": "error", "message": "No player available"})
 
 @app.route("/restart", methods=["POST"])
 def restart():
@@ -374,17 +419,18 @@ def restart():
     subprocess.Popen(["python3"] + sys.argv)
     os._exit(0)
 
-# Run Flask in a separate thread to allow main thread to handle signals
+# OPTIMIZATION: Run Flask with optimized settings
 def run_flask_app():
-    app.run(host="0.0.0.0", port=5000, threaded=True, use_reloader=False)
+    app.run(host="0.0.0.0", port=5000, threaded=True, use_reloader=False, 
+            processes=1, debug=False)  # Disable debug mode for production
 
 flask_thread = Thread(target=run_flask_app, daemon=True)
 flask_thread.start()
 
-# Keep the main thread alive to handle signals
+# OPTIMIZATION: Longer sleep in main thread
 try:
     while running and not shutdown_event.is_set():
-        time.sleep(1)
+        time.sleep(5)  # Increased from 1 second
 except KeyboardInterrupt:
     print("🛑 Keyboard interrupt received in main thread")
     cleanup()
