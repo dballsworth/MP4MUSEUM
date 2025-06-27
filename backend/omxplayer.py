@@ -23,6 +23,7 @@ current_player_process = None
 playback_state = "stopped"  # "playing", "paused", "stopped"
 playback_state_lock = Lock()
 force_stop_playback = Event()  # Signal to stop the entire playlist
+force_pause_playback = Event()  # Signal to pause playback
 
 # Flask imports
 from flask import Flask, jsonify, request
