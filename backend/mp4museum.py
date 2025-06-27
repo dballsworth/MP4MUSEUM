@@ -12,6 +12,11 @@ from threading import Thread
 from threading import Lock
 collection_lock = Lock()
 
+if os.environ.get('DISPLAY', '') == '':
+    instance = vlc.Instance('--no-xlib')
+else:
+    instance = vlc.Instance()
+
 try:
     import RPi.GPIO as GPIO
     print("✅ Using real RPi.GPIO")
@@ -37,12 +42,12 @@ collection_ready = False
 # Initialize collection properly after everything else is set up
 def initialize_collection():
     global current_collection
-    all_collections = sorted([d for d in glob.glob("/media/videos/*") if os.path.isdir(d)])
+    all_collections = sorted([d for d in glob.glob("/media/internal/*") if os.path.isdir(d)])
     if all_collections:
         current_collection = all_collections[0]  # Start with first available collection
         print(f"🎯 Initial collection set to: {current_collection}")
     else:
-        current_collection = "/media/videos"  # Fallback if no collections found
+        current_collection = "/media/internal"  # Fallback if no collections found
         print(f"🎯 No collections found, using fallback: {current_collection}")
     sys.stdout.flush()
 
@@ -174,7 +179,7 @@ def start_player_loop():
     global collection_changed
     global collection_ready
     
-    all_collections = sorted([d for d in glob.glob("/media/videos/*") if os.path.isdir(d)])
+    all_collections = sorted([d for d in glob.glob("/media/internal/*") if os.path.isdir(d)])
     print(f"🎵 Available collections: {all_collections}")
     print(f"📡 Starting player loop with collection: {current_collection}")
     sys.stdout.flush()
@@ -270,7 +275,7 @@ def set_collection():
     global collection_ready
 
     collection = request.json.get("collection")
-    all_collections = [os.path.basename(d) for d in glob.glob("/media/videos/*") if os.path.isdir(d)]
+    all_collections = [os.path.basename(d) for d in glob.glob("/media/internal/*") if os.path.isdir(d)]
     
     if collection not in all_collections:
         return jsonify({"status": "error", "message": "Invalid collection"}), 400
