@@ -3,6 +3,8 @@
 import sys
 import os
 import subprocess
+import time, vlc, os, glob
+import subprocess
 
 player = None  # ensure player is initialized
 
@@ -27,8 +29,7 @@ except (ImportError, RuntimeError, ModuleNotFoundError):
     except ImportError:
         raise ImportError("⚠️ Neither RPi.GPIO nor fake_rpi.GPIO could be loaded.")
 
-import time, vlc, os, glob
-import subprocess
+
 
  # read audio device config
 audiodevice = "0"
