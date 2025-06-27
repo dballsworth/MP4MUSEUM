@@ -1,3 +1,4 @@
-Flask==3.1.1
+#Flask==3.1.1
+Flask=2.2.5
 keyboard==0.13.5
 flask-cors==3.0.10
