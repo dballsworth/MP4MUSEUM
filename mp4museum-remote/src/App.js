@@ -30,8 +30,9 @@ function App() {
   };
 
   return (
-    <div style={{ padding: '1rem', fontFamily: 'sans-serif', maxWidth: 600, margin: 'auto' }}>
-      <h1>🎛 MP4Museum Remote</h1>
+    <div style={{ padding: '1rem', fontFamily: 'sans-serif', maxWidth: 600, margin: 'auto', backgroundColor: '#000', color: '#ff0080' }}>
+      <img src="/540x405.png" alt="DBTV Logo" style={{ width: '200px', marginBottom: '1rem' }} />
+      <h1>📺 DBTV Remote</h1>
       <div>
         <h2>Collections</h2>
         {collections.map(col => (
@@ -41,7 +42,10 @@ function App() {
             style={{
               margin: 4,
               padding: 10,
-              background: col === selectedCollection ? '#00d084' : '#eee'
+              background: col === selectedCollection ? '#ff0080' : '#eee',
+              color: col === selectedCollection ? '#000' : '#ff0080',
+              border: 'none',
+              cursor: 'pointer'
             }}
           >
             {col}
@@ -51,9 +55,9 @@ function App() {
       <hr />
       <div>
         <h2>Controls</h2>
-        <button onClick={() => sendCommand('play')}>▶️ Play</button>
-        <button onClick={() => sendCommand('pause')}>⏸ Pause</button>
-        <button onClick={() => sendCommand('restart')}>🔁 Restart</button>
+        <button onClick={() => sendCommand('play')} style={{ color: '#ff0080', background: 'transparent', border: '1px solid #ff0080', marginRight: 8, padding: '6px 12px', cursor: 'pointer' }}>▶️ Play</button>
+        <button onClick={() => sendCommand('pause')} style={{ color: '#ff0080', background: 'transparent', border: '1px solid #ff0080', marginRight: 8, padding: '6px 12px', cursor: 'pointer' }}>⏸ Pause</button>
+        <button onClick={() => sendCommand('restart')} style={{ color: '#ff0080', background: 'transparent', border: '1px solid #ff0080', padding: '6px 12px', cursor: 'pointer' }}>🔁 Restart</button>
       </div>
       <p>{status}</p>
     </div>

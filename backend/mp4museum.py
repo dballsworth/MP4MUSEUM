@@ -1,7 +1,8 @@
-# mp4museum v6.8 forked by dballsworth - june 2024
+# mp4museum v6.9 forked by dballsworth - june 2024
 # (c) julius schmiedel - http://mp4museum.org4
 import sys
 import os
+import subprocess
 
 player = None  # ensure player is initialized
 
@@ -249,7 +250,9 @@ player_thread = Thread(target=start_player_loop, daemon=True)
 player_thread.start()
 
 # Flask app and API endpoints
+from flask_cors import CORS
 app = Flask(__name__)
+CORS(app)
 
 @app.route("/collections", methods=["GET"])
 def list_collections():
@@ -312,6 +315,9 @@ def pause():
 
 @app.route("/restart", methods=["POST"])
 def restart():
-    os.execv(sys.executable, ['python3'] + sys.argv)
+    print("♻️ Restarting server via subprocess...")
+    sys.stdout.flush()
+    subprocess.Popen(["python3"] + sys.argv)
+    os._exit(0)
 
 app.run(host="0.0.0.0", port=5000)
