@@ -117,7 +117,7 @@ def get_playlist_files(collection_path):
                 
             full_path = os.path.join(collection_path, item)
             if os.path.isfile(full_path):
-                if item.lower().endswith(('.mp4', '.avi', '.mkv', '.mov', '.m4v')):
+                if item.lower().endswith(('.mp4', '.avi', '.mkv', '.mov', '.m4v', '.jpg', '.jpeg', '.png')):
                     files.append(full_path)
                     print(f"   🎬 Found: {item}")
         
@@ -389,6 +389,30 @@ def player_loop():
         
         # Play files in playlist
         for file_path in playlist:
+            file_ext = os.path.splitext(file_path)[1].lower()
+
+            if file_ext in ['.jpg', '.jpeg', '.png']:
+                print(f"🖼️ Displaying image: {file_path}")
+                set_playback_state("playing")
+                
+                try:
+                    clear_screen()  # Clear framebuffer before image
+                    subprocess.run(
+                        ['fim', '-a', file_path],
+                        timeout=5,  # display duration in seconds
+                        check=False,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+                    clear_screen()  # Clear framebuffer after image
+                except subprocess.TimeoutExpired:
+                    print(f"⏱️ Image display timed out: {file_path}")
+                except Exception as e:
+                    print(f"❌ Error showing image: {e}")
+                
+                set_playback_state("stopped")
+                continue  # Skip video handling
+
             if not running or shutdown_event.is_set():
                 return
             
